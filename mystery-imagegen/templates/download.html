@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Downloading Image</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f8f9fa;
+            flex-direction: column;
+        }
+        .message {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .btn {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 16px;
+        }
+        .btn:hover {
+            background-color: #0069d9;
+        }
+    </style>
+</head>
+<body>
+    <div class="message">
+        <h2>Your image is ready to download</h2>
+        <p>Click the button below to download the mystery image</p>
+    </div>
+    <a id="download-link" class="btn" href="{{ image_url }}" download="mystery_image.jpg">Download Image</a>
+    <a class="btn" href="/" style="margin-top: 20px; background-color: #6c757d;">Return to MysteryBot</a>
+
+    <script>
+        // Force download instead of opening in new tab
+        document.addEventListener('DOMContentLoaded', function() {
+            const downloadLink = document.getElementById('download-link');
+            
+            // Create a function to handle the download
+            async function downloadImage() {
+                try {
+                    // Fetch the image
+                    const response = await fetch('{{ image_url }}');
+                    const blob = await response.blob();
+                    
+                    // Create a blob URL
+                    const blobUrl = URL.createObjectURL(blob);
+                    
+                    // Create a temporary link and trigger download
+                    const tempLink = document.createElement('a');
+                    tempLink.href = blobUrl;
+                    tempLink.download = 'mystery_image.jpg';
+                    document.body.appendChild(tempLink);
+                    tempLink.click();
+                    document.body.removeChild(tempLink);
+                    
+                    // Clean up the blob URL
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 100);
+                } catch (error) {
+                    console.error('Download failed:', error);
+                    alert('Failed to download the image. Please try again.');
+                }
+            }
+            
+            // Add click event to the download button
+            downloadLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                downloadImage();
+            });
+            
+            // Auto-trigger download after a short delay
+            setTimeout(downloadImage, 500);
+        });
+    </script>
+</body>
+</html>
