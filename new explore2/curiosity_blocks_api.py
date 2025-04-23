@@ -65,9 +65,12 @@ class CuriosityBlocksAPI:
                 {"role": "system", "content": self.system_prompt}
             ]
             
-            # For tracking topic history (for additional context)
-            self.topic_history = []
-            self.max_history = 5  # Keep only the last 5 topics
+            # Enhanced topic history and user interest tracking
+            self.topic_history = []  # List of topics explored
+            self.subtopic_history = []  # List of subtopics explored
+            self.user_interests = {}  # Dictionary to track user interests and their weights
+            self.interest_categories = {}  # Map topics to broader categories
+            self.max_history = 10  # Keep more history for better personalization
             
             # Exa API configuration for web searches
             self.exa_api_key = os.getenv("EXA_API_KEY")
@@ -79,31 +82,24 @@ class CuriosityBlocksAPI:
 
     def _get_completion_with_history(self, prompt: str, temperature: float = 0.7, max_tokens: int = 4000) -> str:
         """
-        Get a completion using LlamaIndex chat engine with memory.
+        Get a completion using LlamaIndex chat engine with memory or fallback to direct OpenAI API.
         """
+        # Always use the direct OpenAI API approach since we're having issues with the retriever
         try:
-            # Use the chat engine to get response
-            response = self.chat_engine.chat(prompt)
-            # Add to conversation history for backup
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo-16k",
+                messages=self.conversation_history + [{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            reply = response.choices[0].message.content
+            # Add to conversation history
             self.conversation_history.append({"role": "user", "content": prompt})
-            self.conversation_history.append({"role": "assistant", "content": response.response})
-            return response.response
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            return reply
         except Exception as e:
-            print(f"Error generating response: {str(e)}")
-            # Fallback to direct OpenAI API if LlamaIndex fails
-            try:
-                response = openai.chat.completions.create(
-                    model="gpt-3.5-turbo-16k",
-                    messages=self.conversation_history + [{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                reply = response.choices[0].message.content
-                self.conversation_history.append({"role": "assistant", "content": reply})
-                return reply
-            except Exception as e2:
-                print(f"Error in fallback: {str(e2)}")
-                return "I'm having trouble processing that right now. Let's try something else."
+            print(f"Error in OpenAI API call: {str(e)}")
+            return "I'm having trouble processing that right now. Let's try something else."
 
     def generate_topics(self, grade: str, board: str, n_topics: int = 4) -> List[Dict[str, str]]:
         """
@@ -142,44 +138,61 @@ class CuriosityBlocksAPI:
             print(f"Error in generate_topics: {e}")
             raise
 
-    def explain_topic(self, topic: str, grade: str, board: str) -> Dict[str, Any]:
+    def explain_topic(self, topic: str, grade: str, board: str):
         """
         Generate an engaging explanation for a selected topic.
+        Takes into account user's interests and exploration history.
         """
-        self._manage_topic_history(topic)
-
-        # First get the explanation from OpenAI
-        prompt = f"""
-        Generate a concise educational explanation about "{topic}" for {grade} grade students.
-        The explanation should be at least 100 words and complete sentences.
-        Format your response as a JSON object with this exact structure:
-        {{
-            "main_topic": {{
-                "title": "{topic}",
-                "explanation": "At least 100 words explanation with complete sentences"
-            }},
-            "subtopics": [
-                {{
-                    "title": "subtopic name",
-                    "explanation": "1-2 sentence explanation"
-                }},
-                // 2-3 more subtopics with same structure
-            ],
-            "related_topics": [
-                {{
-                    "topic": "related topic name",
-                    "summary": "2-3 sentence explanation of why this topic is relevant"
-                }},
-                // 2 more related topics with same structure
-            ]
-        }}
-        Ensure all fields match these exact names and structure.
-        The main topic explanation must be at least 100 words and end with a complete sentence.
-        """
-
-        response = self._get_completion_with_history(prompt)
+        # Update topic history and user interests
         try:
-            content = json.loads(response)
+            self._manage_topic_history(topic)
+            interest_context = self._get_user_interest_context()
+        except Exception as e:
+            print(f"Error preparing topic context: {e}")
+            interest_context = ""
+        
+        # Generate the explanation
+        try:
+            # Prepare prompt for generating content with personalization
+            prompt = f"""
+            Create an educational explanation about "{topic}" for {grade} grade students following the {board} curriculum.
+            The explanation should be engaging, informative, and appropriate for their grade level.
+            
+            {interest_context}
+            
+            Please tailor the explanation to connect with the user's interests where relevant, while maintaining educational accuracy.
+            
+            Structure the response as a JSON object with the following sections:
+            1. main_topic: An object containing:
+               - title: A catchy title for the topic
+               - explanation: A detailed, engaging explanation (300-500 words) that connects to the user's interests where relevant
+               - image_url: (optional) A URL to a relevant educational image
+            
+            2. subtopics: An array of 2-3 objects, each containing:
+               - title: A clear title for the subtopic
+               - explanation: A concise explanation (100-150 words)
+               - web_resources: (optional) Links to educational resources
+            
+            3. related_topics: An array of 2-3 objects, each containing:
+               - topic: Name of a related topic that connects to both the main topic and the user's interests
+               - summary: A brief summary of how it relates (1-2 sentences)
+               - web_resources: (optional) Links to educational resources
+            """
+            
+            # Get response from OpenAI
+            response = self._get_completion_with_history(prompt)
+            
+            # Parse the JSON response
+            try:
+                content = json.loads(response)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON response: {e}")
+                print(f"Raw response: {response}")
+                return {
+                    "main_topic": {"title": topic, "explanation": "Failed to parse the explanation. Please try again."}, 
+                    "subtopics": [], 
+                    "related_topics": []
+                }
             
             # Process main topic explanation
             main_topic = content["main_topic"]
@@ -190,7 +203,6 @@ class CuriosityBlocksAPI:
             if len(words) < 100:
                 # If less than 100 words, keep adding words until we reach at least 100
                 # or until we reach the end of a complete sentence
-                current_length = len(words)
                 sentences = explanation.split('.')
                 new_explanation = []
                 word_count = 0
@@ -261,46 +273,70 @@ class CuriosityBlocksAPI:
                 return result
 
             # Get web resources for main topic to find an image
-            main_topic_query = f"{main_topic['title']} {main_topic['explanation']} educational content"
-            main_topic_results = self._search_web(main_topic_query)
-            web_resources = self._format_web_results(main_topic_results)
-            main_topic['web_resources'] = web_resources['formatted_text']
-            main_topic['image_url'] = web_resources['image_url']
+            try:
+                main_topic_query = f"{main_topic['title']} {main_topic['explanation']} educational content"
+                main_topic_results = self._search_web(main_topic_query)
+                web_resources = self._format_web_results(main_topic_results)
+                main_topic['web_resources'] = web_resources['formatted_text']
+                main_topic['image_url'] = web_resources['image_url']
+            except Exception as e:
+                print(f"Error getting web resources for main topic: {e}")
+                main_topic['web_resources'] = ""
+                main_topic['image_url'] = ""
 
             # Get web resources for subtopics
             for subtopic in content["subtopics"]:
-                subtopic_query = f"{subtopic['title']} {subtopic['explanation']} educational content"
-                subtopic_results = self._search_web(subtopic_query)
-                subtopic['web_resources'] = self._format_web_results(subtopic_results)['formatted_text']
+                try:
+                    subtopic_query = f"{subtopic['title']} {subtopic['explanation']} educational content"
+                    subtopic_results = self._search_web(subtopic_query)
+                    subtopic['web_resources'] = self._format_web_results(subtopic_results)['formatted_text']
+                except Exception as e:
+                    print(f"Error getting web resources for subtopic: {e}")
+                    subtopic['web_resources'] = ""
 
             return {
                 "main_topic": main_topic,
                 "subtopics": content["subtopics"],
                 "related_topics": related_topics
             }
-
+            
         except Exception as e:
-            print(f"Error parsing explanation JSON: {e}")
+            print(f"Error in explain_topic: {e}")
             return {
-                "main_topic": {"title": topic, "explanation": "Failed to generate explanation"},
-                "subtopics": [],
+                "main_topic": {"title": topic, "explanation": "Failed to generate explanation due to an error."}, 
+                "subtopics": [], 
                 "related_topics": []
             }
 
     def explore_related_topics(self, topic: str, grade: str, board: str) -> List[Dict[str, str]]:
         """
-        Generate related topics based on the current topic being explored.
+        Generate personalized related topics based on the current topic and user interests.
         """
         try:
+            # Update topic history and user interests
             self._manage_topic_history(topic)
-
+            
+            # Get user interest context
+            interest_context = self._get_user_interest_context()
+            
+            # Build a more personalized prompt based on user interests
             prompt = f"""
             Based on the topic "{topic}", suggest exactly 3 related topics for {grade} grade students.
-            For each topic, provide a clear and engaging title and a concise summary that explains why it's relevant.
-            The summary should be exactly 2-3 sentences long and should help students understand the connection to the main topic.
+            
+            {interest_context}
+            
+            Please consider the user's interests when suggesting related topics, but ensure they are still 
+            relevant to the main topic "{topic}". The topics should be educational and appropriate for {grade} grade students.
+            
+            For each topic, provide:
+            1. A clear and engaging title
+            2. A concise summary that explains why it's relevant (2-3 sentences)
+            3. A brief explanation of how it connects to the user's previous interests, if applicable
+            
             Format as a JSON array with exactly 3 objects, each containing:
             - topic (string): Related topic name (max 50 chars)
-            - summary (string): A concise 2-3 sentence explanation of why this topic is relevant
+            - description (string): A concise explanation of why this topic is relevant
+            - connection (string): How this connects to the user's interests (if applicable)
             """
             response = self._get_completion_with_history(prompt)
             try:
@@ -311,10 +347,19 @@ class CuriosityBlocksAPI:
                 for rt in related_topics:
                     if isinstance(rt, dict):
                         topic = str(rt.get("topic", ""))[:50]  # Ensure string and length limit
-                        summary = str(rt.get("summary", "No description provided."))
+                        
+                        # Check if the API returned description or summary (handle both formats)
+                        description = rt.get("description", rt.get("summary", "No description provided."))
+                        description = str(description)
+                        
+                        # Get connection to user interests if available
+                        connection = rt.get("connection", "")
+                        if connection:
+                            description += f" {connection}"
+                            
                         formatted_topics.append({
                             "topic": topic if topic else f"Related Topic {len(formatted_topics) + 1}",
-                            "description": summary if summary else "No description provided."
+                            "description": description
                         })
                 
                 # Ensure exactly 3 topics
@@ -532,20 +577,87 @@ class CuriosityBlocksAPI:
         """
         Reset the conversation context and topic history.
         """
+        # Reset LlamaIndex memory buffer
         self.memory.reset()
+        
+        # Reset manual conversation history
         self.conversation_history = [
             {"role": "system", "content": self.system_prompt}
         ]
+        
+        # Clear topic and interest tracking
         self.topic_history = []
+        self.subtopic_history = []
+        self.user_interests = {}
+        self.interest_categories = {}
 
     def _manage_topic_history(self, topic: str):
         """
-        Manage the topic history, keeping only the most recent topics.
+        Manage the topic history and update user interests based on explored topics.
         """
-        if topic not in self.topic_history:
+        # Add to topic history if not already the most recent topic
+        if not self.topic_history or self.topic_history[-1] != topic:
             self.topic_history.append(topic)
             if len(self.topic_history) > self.max_history:
                 self.topic_history.pop(0)
+            
+            # Update user interests
+            self._update_user_interests(topic)
+    
+    def _update_user_interests(self, topic: str):
+        """
+        Update the user interest model based on the explored topic.
+        Analyzes the topic and categorizes it to build a user interest profile.
+        """
+        # Categorize the topic if not already categorized
+        if topic not in self.interest_categories:
+            # Use LLM to categorize the topic into broader subject areas
+            prompt = f"""
+            Categorize the educational topic "{topic}" into 2-3 broader subject areas or categories.
+            For example, "Black Holes" might be categorized as "Astronomy", "Physics", and "Space Science".
+            Return only a JSON array of category strings, nothing else.
+            """
+            try:
+                response = self._get_completion_with_history(prompt, temperature=0.3)
+                categories = json.loads(response)
+                if isinstance(categories, list):
+                    self.interest_categories[topic] = categories
+                    
+                    # Update weights in user interests
+                    for category in categories:
+                        if category in self.user_interests:
+                            self.user_interests[category] += 1
+                        else:
+                            self.user_interests[category] = 1
+            except Exception as e:
+                print(f"Error categorizing topic: {e}")
+                # Fallback: use the topic itself as a category
+                self.interest_categories[topic] = [topic]
+                if topic in self.user_interests:
+                    self.user_interests[topic] += 1
+                else:
+                    self.user_interests[topic] = 1
+    
+    def _get_user_interest_context(self):
+        """
+        Generate a context string based on user interests to guide topic recommendations.
+        """
+        if not self.user_interests:
+            return ""
+            
+        # Sort interests by weight
+        sorted_interests = sorted(self.user_interests.items(), key=lambda x: x[1], reverse=True)
+        top_interests = sorted_interests[:5]  # Take top 5 interests
+        
+        interest_context = "Based on the user's exploration history, they appear interested in: " + \
+                          ", ".join([f"{interest} (weight: {weight})" for interest, weight in top_interests])
+        
+        # Add recent topics
+        if self.topic_history:
+            recent_topics = self.topic_history[-3:]  # Last 3 topics
+            interest_context += f". Their recent topics include: {', '.join(recent_topics)}."
+            
+        return interest_context
 
 
 # Example usage:
