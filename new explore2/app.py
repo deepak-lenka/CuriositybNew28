@@ -77,10 +77,19 @@ def main():
 
     # Topic exploration section
     st.header("Explore Topic")
+    
+    # Show previous topics for context if available
+    if hasattr(api, 'topic_history') and api.topic_history and len(api.topic_history) > 0:
+        st.caption(f"Previously explored: {', '.join(api.topic_history[-3:])}")
+    
     topic = st.text_input("Enter a topic to explore", value=st.session_state.current_topic)
     
-    if st.button("Explore Topic", on_click=explore_topic_callback) and topic:
-        pass
+    if st.button("Explore Topic") and topic:
+        # Directly update the session state with the manually entered topic
+        st.session_state.current_topic = topic
+        st.session_state.explore_clicked = True
+        # Clear any previous topic content to ensure fresh content is generated
+        st.session_state.topic_content = None
     
     # Process explore topic request
     if st.session_state.explore_clicked and st.session_state.current_topic and not st.session_state.get_related_clicked:
@@ -97,7 +106,12 @@ def main():
         image_url = content["main_topic"].get("image_url")
         if image_url:
             try:
-                st.image(image_url, caption=content["main_topic"]["title"], use_container_width=True)
+                # Validate the image URL before trying to display it
+                if isinstance(image_url, str) and (image_url.startswith('http://') or image_url.startswith('https://')):
+                    st.image(image_url, caption=content["main_topic"]["title"], use_container_width=True)
+                else:
+                    print(f"Invalid image URL format: {image_url}")
+                    st.text("Image could not be loaded - invalid URL format")
             except Exception as e:
                 print(f"Error displaying image: {e}")
                 st.text("Image could not be loaded")
